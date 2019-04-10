@@ -1,0 +1,160 @@
+---
+title: "Hartford Policing"
+author: "Christopher Milne"
+date: "4/10/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(readr)
+library(lubridate)
+library(gt)
+library(sf)
+library(ggthemes)
+library(fs)
+library(gganimate)
+#This loads the libraries needed for all the code used for all the problems.
+
+hartford <- read_rds(url("https://stacks.stanford.edu/file/druid:tr137st9964/tr137st9964_ct_hartford_2019_02_25.rds"))
+
+#This takes the link to the rds file containing the Stanford Open Policing
+#Project data for Hartford CT and stores it as an object for later use.
+
+download.file(url = "https://stacks.stanford.edu/file/druid:tr137st9964/tr137st9964_ct_hartford_shapefiles_2019_02_25.tgz", destfile = "shapes.tgz", 
+              quiet = TRUE,  mode = "wb")
+#This downloads the file containing the data for the geograpgic location of the
+#different districts in Hartford CT (used in creating the map) and stores it as
+#the file "shapes.tgz". The mode allows the command on both mac and pc.
+
+untar("shapes.tgz")
+
+#This takes the downloaded file folder and cleans it up so the data can be acessed.
+
+shapes_data <- read_sf("ct_hartford_shapefiles/Hartford_Neighborhoods.shp")
+
+#This takes the reformatted data and reads them in as an object so that they can
+#be worked with easily.
+
+file_delete(c("shapes.tgz", "ct_hartford_shapefiles/"))
+
+#This deletes the files used to generate the the shapes_data object with the
+#information of the regions of the map because they are no longer needed.
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Arrest Rate by Race and Gender
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+hartford %>% 
+  mutate(subject_race = fct_relevel(subject_race, "hispanic", "black", "white", 
+                                    "asian/pacific islander",
+                                    "other/unknown")) %>%
+#This refactors the subject_race variable so that in the final table the races are listed in a logical order (descending in arrest rate).
+  mutate(subject_race = recode(subject_race, "hispanic" = "Hispanic", "black" = "Black", 
+                               "white" = "White", 
+                               "asian/pacific islander" = "Asian/Pacific Islander",
+                               "other/unknown" = "Other/Unknown")) %>% 
+#This converts the subject_race categories into categories with nicer looking capitalization so that the race categories look better in the final table.
+  group_by(subject_race, subject_sex) %>% 
+#This finds all combinations of race and sex which will give us the desired 10 groups.
+  summarize(stops = n(), arrests = sum(arrest_made)) %>% 
+#For each group, this finds the number of rows that fall in the group and the number of those rows for which an arrest was made. (arrest_made is a logical type variable so sum(arrest_made) is the same as finding the sum of TRUEs.)
+  ungroup() %>% 
+#The data is ungrouped so it behaves as desired in subsequent commands.
+  mutate(arrest_rate = arrests/stops) %>% 
+#This creates a new variable called arrest_rate that, for each row (each group), finds the proportion of stops of that demographic that were arrests.
+  select(subject_sex, subject_race, arrest_rate) %>% 
+#This simplifies the data table by picking out the relevant rows.
+  spread(subject_sex, arrest_rate) %>% 
+#By spreading by sex, the final table will only need five rows rather than 10 because sex will be indicated by the column. This makes the graph easier to read and less busy looking.
+  gt() %>% 
+#This indicates that we are creating a table.
+  tab_header(title = "Arrest Rate by Race and Gender",
+             subtitle = "Hartford Connecticut 2013-2016") %>% 
+#This adds a clear title and subtitle indicating what the table is showing.
+  tab_source_note("Source: Stanford Open Policing Data") %>% 
+#This adds a note at the bottom of the table indicating the source.
+  cols_label(
+    subject_race = "Race",
+    male = "Male",
+    female = "Female"
+  )  %>% 
+#This changes the column labels to be cleaner looking for better aestetic and clarity.
+  fmt_percent(columns = vars(male, female))
+#This changes the arrest_rate entries to be percentages rather than decimals because it looks cleaner and is more clear.
+```
+
+##Police Stops by Minute of the Hour
+Police stops seem to be more commonly reported at "clean" looking times.
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+z<- hartford %>% 
+#This means that the manipulation of the hartford data set is stored as the object z.
+  mutate(minute = minute(time)) %>% 
+#This creates a new variable that is formed by extracting the mininute variable from each time.
+  group_by(minute) %>% 
+  summarize(number = n())
+#This considers groups of stops for which the minute of the hour is the same and outputs a 2 column tibble where one column is the minute of the hour and the other is the number of stops falling in that minute of the hour. This will allow us to visualize whether there are trends in what minute of the hour stops are listed as occurring.
+
+z %>% 
+  ggplot(aes(x= minute, y = number))+
+#This takes our stored object and creates a plot with minute of the hour on the x axis and the number of stops at that minute on y axis.
+  geom_line()+
+#This makes the plot a line plot to clearly show the change across the 60 minutes of the hour.
+  labs(title = "Police Stops by Minute of the Hour",
+       subtitle = "in Hartford Connecticut",
+       caption = "Source: Stanford Open Policing Data")+
+#This gives the plot a clear title and subtitle as well as a caption indicating the source.
+  theme_minimal()+
+#This calls a theme to make the graph look better than the default.
+  ylab("Number of Stops")+
+  xlab("Minute of the Hour")
+#These commands change the axis labels from the column labels to more descriptive titles so the graph is easier to interpret.
+```
+
+##Police Searches Resulting 
+##in Arrests of Hispanic People
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+search_arrests <- hartford %>% 
+#This means the manipulation of hartford data set below is stored as an object to be called later.
+  filter(search_conducted) %>% 
+  filter(arrest_made) %>% 
+#Since search_conducted and arrest_made are logical variables, this isolates rows for which they are both TRUE.
+  filter(!is.na(lng), !is.na(lat)) %>% 
+#This removes all rows without known coordinate locations because they will not be able to be mapped.
+  filter(lng> -72.72, lat> 41.72) %>% 
+  filter(lng < -72.64) %>% 
+#This resticts the rows to those where the longtitude and latitude fall in the region indicated by the shapes_data describing the regions of hartford. This makes the default zoom on the map better suited to make the map easy to interpret.
+  filter(subject_race == "hispanic") %>% 
+#This isolates cases where the subject involved is hispanic, because for this map I am only interested in the stops of hispanic people.
+  mutate(Sex = subject_sex) %>% 
+#This creates a new identical column indicating the subject's sex, except this column has a name that is cleaner for the sake of inproving the legend label in the final map.
+  mutate(Sex = str_replace_all(Sex, "male", "Male")) %>% 
+  mutate(Sex = str_replace_all(Sex, "feMale", "Female"))
+#These commands change the capitalization of the sex categorizes so that they appear better in the map legend.
+#Note: the order of these two commands is significant because the first command will recognize the "male" string in "female" and change it accordingly. This is why the second command changes "feMale" rather than "female".
+
+search_locations <- st_as_sf(search_arrests, 
+                             coords = c("lng", "lat"), 
+                             crs = 4326) 
+#This calls the object search_arrests and indicates what variables (lng and lat in this case) are to be used as the coordinate variables.
+
+ggplot(data = shapes_data) +
+#This indicates that we are creating a plot starting with a layer from the shapes_data we previously created.
+  geom_sf() +
+#This sets up the plot to be able to be a map.
+  geom_sf(data = search_locations, aes(color = Sex, fill = Sex)) +
+#This adds another layer by using the data from search_locations (which we already specified to use lng and lat) for the coordinate variables. The points in this layer are colored to indicate sex.
+  theme_map() + 
+#This indicates that the plot is a map stylistically.
+  labs(title = "Police Searches Resulting 
+in Arrests of Hispanic People",
+       subtitle = "Hartford CT, By Sex", 
+       caption = "
+       Source: Stanford Open Policing Project" )+
+#This gives the map a clear title and subtitle as well as a caption indicating the source.
+  theme_solarized_2()+
+#This improves the appearance of the map by implementing a pre-created set of visual style choices.
+  theme(axis.text.x = element_text(angle = 90))
+#This rotates the x axis break labels to sideways so that they aren't too cluttered to be read.
+```
